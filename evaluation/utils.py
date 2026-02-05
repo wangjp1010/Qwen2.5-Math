@@ -145,6 +145,12 @@ PROMPT_TEMPLATES = {
         "{output}",
         "\n\n",
     ),
+    "yulan": (
+        "<|im_start|>user\nPlease reason step by step, and put your final answer within \\boxed{{}}.\n{input}<|im_end|>\n"
+        "<|im_start|>assistant\n",
+        "{output}",
+        "\n\n",
+    ),
     "mathstral": (
         "{input}\nPlease reason step by step, and put your final answer within \\boxed{{}}.",
         "{output}",

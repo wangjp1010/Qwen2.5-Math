@@ -583,7 +583,7 @@ def parse_ground_truth(example: Dict[str, Any], data_name):
         return example["gt_cot"], gt_ans
 
     # parse ground truth
-    if data_name in ["math", "minerva_math"]:
+    if data_name in ["math", "minerva_math", "math_oai"]:
         gt_cot = example["solution"]
         gt_ans = extract_answer(gt_cot, data_name)
     elif data_name == "gsm8k":
@@ -593,7 +593,7 @@ def parse_ground_truth(example: Dict[str, Any], data_name):
     elif data_name == "asdiv":
         gt_cot = example["formula"]
         gt_ans = re.sub(r"\(.*?\)", "", example["answer"])
-    elif data_name == "mawps":
+    elif data_name in ["mawps","gsm_hard"]:
         gt_cot, gt_ans = None, example["target"]
     elif data_name == "tabmwp":
         gt_cot = example["solution"]
