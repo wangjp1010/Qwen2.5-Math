@@ -3,7 +3,7 @@ export CUDA_VISIBLE_DEVICES=0
 port=3011$CUDA_VISIBLE_DEVICES
 
 all_hf_path=(
-    /opt/aps/workdir/input/file/pretrain-linear-moe/wangjiapeng/qy/Llama-3.2-3B-Instruct
+    /opt/aps/workdir/input/file/pretrain-linear-moe/cache/models/yulan-team/YuLan-Mini
 )    
 
 hf_path=${all_hf_path[$CUDA_VISIBLE_DEVICES]}

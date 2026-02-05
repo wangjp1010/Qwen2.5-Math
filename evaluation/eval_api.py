@@ -59,6 +59,17 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=32,
                         help="API批量请求大小")
 
+    parser.add_argument(
+        "--apply_chat_template",
+        action="store_true",
+        help="Apply chat template to prompt.",
+    )
+    parser.add_argument("--pipeline_parallel_size", type=int, default=1)
+    parser.add_argument(
+        "--adapt_few_shot",
+        action="store_true",
+        help="Few shot for multiple-choice questions, zero shot for others.",
+    )
     args = parser.parse_args()
     args.top_p = 1 if args.temperature == 0 else args.top_p
     return args
@@ -106,26 +117,15 @@ def prepare_data(data_name, args):
 
 def api_generate_batch(model: APIModel, prompts: List[str], args, stop_words: List[str]) -> List[str]:
     """批量生成API调用"""
-    if args.use_chat_template:
-        outputs = model.generate_with_chat_template(
-            prompts=prompts,
-            temperature=args.temperature,
-            top_p=args.top_p,
-            max_tokens=args.max_tokens_per_call,
-            n=1,
-            stop=stop_words,
-            system_prompt=args.system_prompt,
-        )
-    else:
-        outputs = model.generate(
-            prompts=prompts,
-            temperature=args.temperature,
-            top_p=args.top_p,
-            max_tokens=args.max_tokens_per_call,
-            n=1,
-            stop=stop_words,
-            use_chat_template=args.use_chat_template,
-        )
+    # print(prompts)
+    outputs = model.generate(
+        prompts=prompts,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        max_tokens=args.max_tokens_per_call,
+        n=1,
+        stop=stop_words,
+    )
     return outputs
 
 

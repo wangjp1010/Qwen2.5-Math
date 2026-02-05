@@ -8,7 +8,8 @@ SPLIT="test"
 NUM_TEST_SAMPLE=-1
 
 # English open datasets
-DATA_NAME="gsm8k,math_oai,gsm_hard,svamp,gaokao2023en,olympiadbench,college_math"
+DATA_NAME="gsm8k"
+# DATA_NAME="gsm8k,math_oai,gsm_hard,svamp,gaokao2023en,olympiadbench,college_math"
 # DATA_NAME="gsm_hard,svamp,minerva_math,gaokao2023en,olympiadbench,college_math"
 TOKENIZERS_PARALLELISM=false \
 python math_eval.py \
@@ -27,4 +28,4 @@ python math_eval.py \
     --use_vllm \
     --save_outputs \
     --overwrite \
-    --max_tokens_per_call 8192 \
+    --max_tokens_per_call 2048 \

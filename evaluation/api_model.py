@@ -1,16 +1,24 @@
-"""
-支持OpenAI API格式（VLLM API）的模型调用
-可用于本地或远程API服务器的评测
-"""
-import requests
-import json
 import time
+import os
 from typing import List, Dict, Optional, Any
 from tqdm import tqdm
+import openai
+from pprint import pformat
 
+def convert_any_to_base_url(any_url: str) -> str:
+    """标准化 API 基础地址"""
+    if any_url.startswith("http"):
+        any_url = any_url
+    else:
+        any_url = f"http://0.0.0.0:{any_url}"
+    
+    any_url = any_url.rstrip("/")
+    if not any_url.endswith("/v1"):
+        any_url = any_url + "/v1"
+    return any_url
 
 class APIModel:
-    """通过OpenAI兼容API调用模型"""
+    """通过 OpenAI 兼容库调用模型 (支持 vLLM/Local/Remote)"""
 
     def __init__(
         self,
@@ -19,38 +27,33 @@ class APIModel:
         model_name: str = None,
         timeout: int = 120,
     ):
-        """
-        初始化API模型客户端
-
-        Args:
-            api_base: API基础地址，默认本地VLLM服务
-            api_key: API密钥，VLLM通常使用"EMPTY"
-            model_name: 模型名称，如果不提供则从API获取
-            timeout: 请求超时时间（秒）
-        """
-        self.api_base = api_base.rstrip("/")
+        # 1. 标准化 URL
+        self.api_base = convert_any_to_base_url(api_base)
         self.api_key = api_key
         self.timeout = timeout
 
-        # 获取模型信息
+        # 2. 初始化 OpenAI 客户端
+        self.client = openai.OpenAI(
+            api_key=self.api_key,
+            base_url=self.api_base,
+            timeout=self.timeout
+        )
+
+        # 3. 获取模型信息
         if model_name:
             self.model_name = model_name
         else:
             self.model_name = self._get_model_name()
 
-        print(f"Connected to model: {self.model_name}")
+        print(f"Connected to API: {self.api_base}")
+        print(f"Using model: {self.model_name}")
 
     def _get_model_name(self) -> str:
-        """获取模型名称"""
+        """从 API 获取第一个可用模型名称"""
         try:
-            response = requests.get(
-                f"{self.api_base}/models",
-                timeout=self.timeout
-            )
-            if response.status_code == 200:
-                models = response.json().get("data", [])
-                if models:
-                    return models[0].get("id", "unknown")
+            models = list(self.client.models.list())
+            if models:
+                return models[0].id
         except Exception as e:
             print(f"Warning: Could not get model name: {e}")
         return "unknown"
@@ -66,95 +69,39 @@ class APIModel:
         **kwargs
     ) -> List[str]:
         """
-        生成文本
-
-        Args:
-            prompts: 提示词列表
-            temperature: 温度
-            top_p: top-p采样参数
-            max_tokens: 最大生成长度
-            n: 采样数量
-            stop: 停止词列表
-            **kwargs: 其他参数
-
-        Returns:
-            生成文本列表
+        生成文本 (使用 completions 接口)
         """
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
-        }
-
         stop_words = stop or []
-        if isinstance(stop_words, str):
-            stop_words = [stop_words]
-
         outputs = []
-        batch_size = 32  # VLLM推荐批量大小
+        batch_size = 1024  # vLLM 支持 batch prompt
 
         for i in tqdm(range(0, len(prompts), batch_size), desc="API Generating"):
             batch_prompts = prompts[i:i + batch_size]
 
-            data = {
-                "model": self.model_name,
-                "messages": [
-                    {"role": "user", "content": prompt}
-                    for prompt in batch_prompts
-                ] if "chat" in self.api_base.lower() or kwargs.get("use_chat_template", False) else batch_prompts,
-                "temperature": temperature,
-                "top_p": top_p,
-                "max_tokens": max_tokens,
-                "n": n,
-                "stop": stop_words,
-                "stream": False,
-            }
-
-            # 移除VLLM不支持的参数
-            data = {k: v for k, v in data.items() if v is not None}
-
             max_retries = 3
             for retry in range(max_retries):
                 try:
-                    response = requests.post(
-                        f"{self.api_base}/chat/completions" if "chat" in self.api_base.lower() or kwargs.get("use_chat_template", False)
-                        else f"{self.api_base}/completions",
-                        headers=headers,
-                        json=data,
-                        timeout=self.timeout
+                    # 使用 OpenAI SDK 的 completions 接口
+                    # 某些 vLLM 专有参数（如 prompt_logprobs）通过 extra_body 传入
+                    response = self.client.completions.create(
+                        model=self.model_name,
+                        prompt=batch_prompts,
+                        temperature=temperature,
+                        top_p=top_p,
+                        max_tokens=max_tokens,
+                        n=n,
+                        stop=stop_words,
+                        extra_body=kwargs # 用于透传 prompt_logprobs 等
                     )
+                    
+                    batch_outputs = [choice.text for choice in response.choices]
+                    outputs.extend(batch_outputs)
+                    break
 
-                    if response.status_code == 200:
-                        result = response.json()
-
-                        if "chat" in self.api_base.lower() or kwargs.get("use_chat_template", False):
-                            batch_outputs = [
-                                choice["message"]["content"]
-                                for choice in result["choices"]
-                            ]
-                        else:
-                            batch_outputs = [
-                                choice["text"]
-                                for choice in result["choices"]
-                            ]
-
-                        outputs.extend(batch_outputs)
-                        break
-                    else:
-                        error_msg = response.text
-                        print(f"API Error (attempt {retry + 1}/{max_retries}): {error_msg}")
-                        if retry == max_retries - 1:
-                            raise Exception(f"API request failed: {error_msg}")
-                        time.sleep(1)
-
-                except requests.exceptions.Timeout:
-                    print(f"Request timeout (attempt {retry + 1}/{max_retries})")
-                    if retry == max_retries - 1:
-                        raise
-                    time.sleep(1)
                 except Exception as e:
-                    print(f"Request error (attempt {retry + 1}/{max_retries}): {e}")
+                    print(f"Error (attempt {retry + 1}/{max_retries}): {e}")
                     if retry == max_retries - 1:
-                        raise
+                        raise e
                     time.sleep(1)
 
         return outputs
@@ -168,85 +115,40 @@ class APIModel:
         n: int = 1,
         stop: Optional[List[str]] = None,
         system_prompt: str = None,
+        **kwargs
     ) -> List[str]:
         """
-        使用聊天模板生成文本（OpenAI Chat格式）
-
-        Args:
-            prompts: 用户提示词列表
-            temperature: 温度
-            top_p: top-p采样参数
-            max_tokens: 最大生成长度
-            n: 采样数量
-            stop: 停止词列表
-            system_prompt: 系统提示词
-
-        Returns:
-            生成文本列表
+        使用聊天模板生成文本 (使用 chat/completions 接口)
         """
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
-        }
-
-        stop_words = stop or []
-
         outputs = []
-        batch_size = 32
-
-        for i in tqdm(range(0, len(prompts), batch_size), desc="API Chat Generating"):
-            batch_prompts = prompts[i:i + batch_size]
-
-            messages_batch = []
-            for prompt in batch_prompts:
-                messages = []
-                if system_prompt:
-                    messages.append({"role": "system", "content": system_prompt})
-                messages.append({"role": "user", "content": prompt})
-                messages_batch.append(messages)
-
-            data = {
-                "model": self.model_name,
-                "messages": messages_batch,
-                "temperature": temperature,
-                "top_p": top_p,
-                "max_tokens": max_tokens,
-                "n": n,
-                "stop": stop_words,
-                "stream": False,
-            }
-
-            data = {k: v for k, v in data.items() if v is not None}
+        
+        # 注意：标准 OpenAI SDK 的 chat 接口不支持一次性传入多个 messages 列表
+        # 这里的 batch_size 逻辑主要为了进度条显示
+        for prompt in tqdm(prompts, desc="API Chat Generating"):
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
 
             max_retries = 3
             for retry in range(max_retries):
                 try:
-                    response = requests.post(
-                        f"{self.api_base}/chat/completions",
-                        headers=headers,
-                        json=data,
-                        timeout=self.timeout
+                    response = self.client.chat.completions.create(
+                        model=self.model_name,
+                        messages=messages,
+                        temperature=temperature,
+                        top_p=top_p,
+                        max_tokens=max_tokens,
+                        n=n,
+                        stop=stop,
+                        extra_body=kwargs
                     )
-
-                    if response.status_code == 200:
-                        result = response.json()
-                        batch_outputs = [
-                            choice["message"]["content"]
-                            for choice in result["choices"]
-                        ]
-                        outputs.extend(batch_outputs)
-                        break
-                    else:
-                        error_msg = response.text
-                        print(f"API Error (attempt {retry + 1}/{max_retries}): {error_msg}")
-                        if retry == max_retries - 1:
-                            raise Exception(f"API request failed: {error_msg}")
-                        time.sleep(1)
-
+                    outputs.append(response.choices[0].message.content)
+                    break
                 except Exception as e:
-                    print(f"Request error (attempt {retry + 1}/{max_retries}): {e}")
+                    print(f"Chat Error (attempt {retry + 1}/{max_retries}): {e}")
                     if retry == max_retries - 1:
-                        raise
+                        raise e
                     time.sleep(1)
 
         return outputs
@@ -258,18 +160,6 @@ def load_api_model(
     model_name: str = None,
     timeout: int = 120,
 ) -> APIModel:
-    """
-    加载API模型
-
-    Args:
-        api_base: API基础地址
-        api_key: API密钥
-        model_name: 模型名称
-        timeout: 超时时间
-
-    Returns:
-        APIModel实例
-    """
     return APIModel(
         api_base=api_base,
         api_key=api_key,
@@ -279,29 +169,27 @@ def load_api_model(
 
 
 if __name__ == "__main__":
-    # 测试API连接
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--api_base", type=str, default="http://localhost:8000/v1")
-    parser.add_argument("--api_key", type=str, default="EMPTY")
-    parser.add_argument("--model_name", type=str, default=None)
-    args = parser.parse_args()
+    # 模拟简单的命令行测试
+    import sys
+    
+    # 获取参数
+    api_url = sys.argv[1] if len(sys.argv) > 1 else "8000" # 兼容端口号或完整URL
+    api_key = sys.argv[2] if len(sys.argv) > 2 else "EMPTY"
 
     try:
-        model = load_api_model(
-            api_base=args.api_base,
-            api_key=args.api_key,
-            model_name=args.model_name,
-        )
+        model = load_api_model(api_base=api_url, api_key=api_key)
 
-        # 测试生成
+        # 测试 Completion 模式 (支持 batch)
         test_prompts = ["1+1=", "2+2="]
-        outputs = model.generate(test_prompts, max_tokens=10)
-        for prompt, output in zip(test_prompts, outputs):
-            print(f"Prompt: {prompt}")
-            print(f"Output: {output}")
-            print("-" * 50)
+        print("\nTesting Completions...")
+        results = model.generate(test_prompts, max_tokens=10)
+        for p, r in zip(test_prompts, results):
+            print(f"Q: {p} | A: {r.strip()}")
+
+        # 测试 Chat 模式
+        print("\nTesting Chat...")
+        chat_results = model.generate_with_chat_template(["你好，请问你是谁？"], max_tokens=50)
+        print(f"Chat Output: {chat_results[0]}")
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Execution failed: {e}")
